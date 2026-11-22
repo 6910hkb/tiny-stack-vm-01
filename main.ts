@@ -1,75 +1,207 @@
-// Tiny stack VM, faithful port of the reference vm.mjs in the kit.
-// ISA: generator/subject/ISA.md. Traps 2-11, step/output limits, wrapping
-// 32-bit arithmetic, unsigned DIVU/MODU/LTU, exact MUL via Math.imul.
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-function run(p, inp) {
-  const D = new Int32Array(256); let s = 0;
-  const C = new Int32Array(64); let c = 0;
-  const M = new Int32Array(256);
-  const o = new Uint8Array(65536); let ol = 0, ip = 0, pc = 0, st = 0;
-  const n = p.length;
-  const trap = (e) => ({ o: o.slice(0, ol), e });
-  for (;;) {
-    if (st === 1000000) return trap(10);
-    if (pc < 0 || pc >= n) return trap(9);
-    const op = p[pc];
-    const kn = op <= 7 || (op >= 16 && op <= 30) || (op >= 32 && op <= 34) || (op >= 48 && op <= 52) || (op >= 64 && op <= 65) || (op >= 80 && op <= 83);
-    if (!kn) return trap(5);
-    const im = op === 1 ? 1 : op === 2 ? 4 : op >= 48 && op <= 51 ? 2 : 0;
-    if (pc + im >= n) return trap(9);
-    st++; const nx = pc + 1 + im; pc = nx;
-    switch (op) {
-      case 0x00: return { o: o.slice(0, ol), e: 0 };
-      case 0x01: if (s >= 256) return trap(3); D[s++] = (p[nx - 1] << 24) >> 24; break;
-      case 0x02: if (s >= 256) return trap(3); D[s++] = p[nx - 4] | p[nx - 3] << 8 | p[nx - 2] << 16 | p[nx - 1] << 24; break;
-      case 0x03: if (s < 1) return trap(2); s--; break;
-      case 0x04: if (s < 1) return trap(2); if (s >= 256) return trap(3); D[s] = D[s - 1]; s++; break;
-      case 0x05: if (s < 2) return trap(2); { const t = D[s - 1]; D[s - 1] = D[s - 2]; D[s - 2] = t; } break;
-      case 0x06: if (s < 2) return trap(2); if (s >= 256) return trap(3); D[s] = D[s - 2]; s++; break;
-      case 0x07: if (s < 3) return trap(2); { const a = D[s - 3]; D[s - 3] = D[s - 2]; D[s - 2] = D[s - 1]; D[s - 1] = a; } break;
-      case 0x10: case 0x11: case 0x12: case 0x13: case 0x14: case 0x15: case 0x16: case 0x18: case 0x19: case 0x1a: case 0x1c: case 0x1d: case 0x1e: case 0x20: case 0x21: case 0x22: {
-        if (s < 2) return trap(2);
-        const b = D[s - 1], a = D[s - 2]; let r = 0;
-        if (op === 0x10) r = (a + b) | 0;
-        else if (op === 0x11) r = (a - b) | 0;
-        else if (op === 0x12) r = Math.imul(a, b);
-        else if (op === 0x13) { if (!b) return trap(4); r = a === -2147483648 && b === -1 ? a : (a / b) | 0; }
-        else if (op === 0x14) { if (!b) return trap(4); r = b === -1 ? 0 : a % b | 0; }
-        else if (op === 0x15) { if (!b) return trap(4); r = Math.floor((a >>> 0) / (b >>> 0)) | 0; }
-        else if (op === 0x16) { if (!b) return trap(4); r = (a >>> 0) % (b >>> 0) | 0; }
-        else if (op === 0x18) r = a & b;
-        else if (op === 0x19) r = a | b;
-        else if (op === 0x1a) r = a ^ b;
-        else if (op === 0x1c) r = a << (b & 31);
-        else if (op === 0x1d) r = a >> (b & 31);
-        else if (op === 0x1e) r = (a >>> (b & 31)) | 0;
-        else if (op === 0x20) r = a === b ? 1 : 0;
-        else if (op === 0x21) r = a < b ? 1 : 0;
-        else r = (a >>> 0) < (b >>> 0) ? 1 : 0;
-        s -= 2; D[s++] = r; break;
-      }
-      case 0x17: if (s < 1) return trap(2); D[s - 1] = -D[s - 1] | 0; break;
-      case 0x1b: if (s < 1) return trap(2); D[s - 1] = ~D[s - 1]; break;
-      case 0x30: { const rel = ((p[nx - 2] | p[nx - 1] << 8) << 16) >> 16; pc = nx + rel; break; }
-      case 0x31: case 0x32: if (s < 1) return trap(2); { const v = D[--s]; const rel = ((p[nx - 2] | p[nx - 1] << 8) << 16) >> 16; if ((op === 0x31) === (v === 0)) pc = nx + rel; break; }
-      case 0x33: if (c >= 64) return trap(7); C[c++] = nx; pc = p[nx - 2] | p[nx - 1] << 8; break;
-      case 0x34: if (c === 0) return trap(8); pc = C[--c]; break;
-      case 0x40: if (s < 1) return trap(2); { const a = D[s - 1]; if (a < 0 || a >= 256) return trap(6); D[s - 1] = M[a]; break; }
-      case 0x41: if (s < 2) return trap(2); { const a = D[s - 1], v = D[s - 2]; if (a < 0 || a >= 256) return trap(6); s -= 2; M[a] = v; break; }
-      case 0x50: if (s < 1) return trap(2); { const t = String(D[s - 1]); if (ol + t.length > 65536) return trap(11); s--; for (let i = 0; i < t.length; i++) o[ol++] = t.charCodeAt(i); break; }
-      case 0x51: if (s < 1) return trap(2); if (ol + 1 > 65536) return trap(11); o[ol++] = D[--s] & 255; break;
-      case 0x52: if (s >= 256) return trap(3); D[s++] = ip < inp.length ? inp[ip++] : -1; break;
-      case 0x53: if (s < 1) return trap(2); return { o: o.slice(0, ol), e: D[--s] & 255 };
-      default: return trap(5);
+// A tiny stack machine for the make.fun bounty.
+// It runs one bytecode program per instance and writes that program's
+// output bytes plus its exit code. All numbers wrap to 32 bits.
+// Traps: 2 underflow, 3 overflow, 4 divide by zero, 5 bad opcode,
+// 6 bad memory, 7 call overflow, 8 empty return, 9 bad pc,
+// 10 step limit (1,000,000), 11 output limit (65,536 bytes).
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+function solve(prog, input) {
+  const stack = new Int32Array(256);
+  const calls = new Int32Array(64);
+  const memory = new Int32Array(256);
+  const bytesOut = new Uint8Array(65536);
+  let top = 0;
+  let callTop = 0;
+  let outLen = 0;
+  let inPos = 0;
+  let pc = 0;
+  let steps = 0;
+  const total = prog.length;
+  function fail(code) {
+    return { bytes: bytesOut.slice(0, outLen), code };
+  }
+  function need(n) {
+    if (top < n) return true;
+    return false;
+  }
+  function room(n) {
+    if (top + n > 256) return true;
+    return false;
+  }
+  while (true) {
+    if (steps === 1000000) return fail(10);
+    if (pc < 0 || pc >= total) return fail(9);
+    const op = prog[pc];
+    const known = op <= 7 || (op >= 16 && op <= 30) || (op >= 32 && op <= 34) || (op >= 48 && op <= 52) || (op >= 64 && op <= 65) || (op >= 80 && op <= 83);
+    if (!known) return fail(5);
+    const imm = op === 1 ? 1 : op === 2 ? 4 : op >= 48 && op <= 51 ? 2 : 0;
+    if (pc + imm >= total) return fail(9);
+    steps += 1;
+    const after = pc + 1 + imm;
+    pc = after;
+    if (op === 0) return { bytes: bytesOut.slice(0, outLen), code: 0 };
+    if (op === 1) {
+      if (room(1)) return fail(3);
+      stack[top++] = (prog[after - 1] << 24) >> 24;
+      continue;
     }
+    if (op === 2) {
+      if (room(1)) return fail(3);
+      stack[top++] = prog[after - 4] | (prog[after - 3] << 8) | (prog[after - 2] << 16) | (prog[after - 1] << 24);
+      continue;
+    }
+    if (op === 3) {
+      if (need(1)) return fail(2);
+      top -= 1;
+      continue;
+    }
+    if (op === 4) {
+      if (need(1)) return fail(2);
+      if (room(1)) return fail(3);
+      stack[top] = stack[top - 1];
+      top += 1;
+      continue;
+    }
+    if (op === 5) {
+      if (need(2)) return fail(2);
+      const tmp = stack[top - 1];
+      stack[top - 1] = stack[top - 2];
+      stack[top - 2] = tmp;
+      continue;
+    }
+    if (op === 6) {
+      if (need(2)) return fail(2);
+      if (room(1)) return fail(3);
+      stack[top] = stack[top - 2];
+      top += 1;
+      continue;
+    }
+    if (op === 7) {
+      if (need(3)) return fail(2);
+      const first = stack[top - 3];
+      stack[top - 3] = stack[top - 2];
+      stack[top - 2] = stack[top - 1];
+      stack[top - 1] = first;
+      continue;
+    }
+    if (op === 23) {
+      if (need(1)) return fail(2);
+      stack[top - 1] = -stack[top - 1] | 0;
+      continue;
+    }
+    if (op === 27) {
+      if (need(1)) return fail(2);
+      stack[top - 1] = ~stack[top - 1];
+      continue;
+    }
+    if (op >= 16 && op <= 34 && op !== 23 && op !== 27 && op !== 31) {
+      if (need(2)) return fail(2);
+      const rhs = stack[top - 1];
+      const lhs = stack[top - 2];
+      let value = 0;
+      if (op === 16) value = (lhs + rhs) | 0;
+      else if (op === 17) value = (lhs - rhs) | 0;
+      else if (op === 18) value = Math.imul(lhs, rhs);
+      else if (op === 19) {
+        if (rhs === 0) return fail(4);
+        value = lhs === -2147483648 && rhs === -1 ? lhs : (lhs / rhs) | 0;
+      } else if (op === 20) {
+        if (rhs === 0) return fail(4);
+        value = rhs === -1 ? 0 : (lhs % rhs) | 0;
+      } else if (op === 21) {
+        if (rhs === 0) return fail(4);
+        value = Math.floor((lhs >>> 0) / (rhs >>> 0)) | 0;
+      } else if (op === 22) {
+        if (rhs === 0) return fail(4);
+        value = ((lhs >>> 0) % (rhs >>> 0)) | 0;
+      } else if (op === 24) value = lhs & rhs;
+      else if (op === 25) value = lhs | rhs;
+      else if (op === 26) value = lhs ^ rhs;
+      else if (op === 28) value = lhs << (rhs & 31);
+      else if (op === 29) value = lhs >> (rhs & 31);
+      else if (op === 30) value = (lhs >>> (rhs & 31)) | 0;
+      else if (op === 32) value = lhs === rhs ? 1 : 0;
+      else if (op === 33) value = lhs < rhs ? 1 : 0;
+      else value = (lhs >>> 0) < (rhs >>> 0) ? 1 : 0;
+      top -= 2;
+      stack[top++] = value;
+      continue;
+    }
+    if (op === 48) {
+      const rel = ((prog[after - 2] | (prog[after - 1] << 8)) << 16) >> 16;
+      pc = after + rel;
+      continue;
+    }
+    if (op === 49 || op === 50) {
+      if (need(1)) return fail(2);
+      const v = stack[--top];
+      const rel = ((prog[after - 2] | (prog[after - 1] << 8)) << 16) >> 16;
+      if ((op === 49) === (v === 0)) pc = after + rel;
+      continue;
+    }
+    if (op === 51) {
+      if (callTop >= 64) return fail(7);
+      calls[callTop++] = after;
+      pc = prog[after - 2] | (prog[after - 1] << 8);
+      continue;
+    }
+    if (op === 52) {
+      if (callTop === 0) return fail(8);
+      pc = calls[--callTop];
+      continue;
+    }
+    if (op === 64) {
+      if (need(1)) return fail(2);
+      const addr = stack[top - 1];
+      if (addr < 0 || addr >= 256) return fail(6);
+      stack[top - 1] = memory[addr];
+      continue;
+    }
+    if (op === 65) {
+      if (need(2)) return fail(2);
+      const addr = stack[top - 1];
+      const val = stack[top - 2];
+      if (addr < 0 || addr >= 256) return fail(6);
+      top -= 2;
+      memory[addr] = val;
+      continue;
+    }
+    if (op === 80) {
+      if (need(1)) return fail(2);
+      const text = String(stack[top - 1]);
+      if (outLen + text.length > 65536) return fail(11);
+      top -= 1;
+      for (let i = 0; i < text.length; i++) bytesOut[outLen++] = text.charCodeAt(i);
+      continue;
+    }
+    if (op === 81) {
+      if (need(1)) return fail(2);
+      if (outLen + 1 > 65536) return fail(11);
+      bytesOut[outLen++] = stack[--top] & 255;
+      continue;
+    }
+    if (op === 82) {
+      if (room(1)) return fail(3);
+      stack[top++] = inPos < input.length ? input[inPos++] : -1;
+      continue;
+    }
+    if (op === 83) {
+      if (need(1)) return fail(2);
+      return { bytes: bytesOut.slice(0, outLen), code: stack[--top] & 255 };
+    }
+    return fail(5);
   }
 }
-const I = process.env.MAKEFUN_INPUT_DIR ?? '/input';
-const O = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-for (const id of readdirSync(I).sort()) {
-  const r = run(new Uint8Array(readFileSync(join(I, id, 'program.bin'))), new Uint8Array(readFileSync(join(I, id, 'input.bin'))));
-  mkdirSync(join(O, id), { recursive: true });
-  writeFileSync(join(O, id, 'stdout.bin'), r.o);
-  writeFileSync(join(O, id, 'exit.txt'), `${r.e}\n`);
+
+const inputDir = process.env.MAKEFUN_INPUT_DIR ?? "/input";
+const outputDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
+for (const name of readdirSync(inputDir).sort()) {
+  const program = new Uint8Array(readFileSync(join(inputDir, name, "program.bin")));
+  const input = new Uint8Array(readFileSync(join(inputDir, name, "input.bin")));
+  const result = solve(program, input);
+  mkdirSync(join(outputDir, name), { recursive: true });
+  writeFileSync(join(outputDir, name, "stdout.bin"), result.bytes);
+  writeFileSync(join(outputDir, name, "exit.txt"), `${result.code}\n`);
 }
